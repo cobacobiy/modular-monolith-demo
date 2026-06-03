@@ -90,6 +90,32 @@ Proyek ini dilengkapi dengan beberapa *branch* yang sudah disiapkan untuk mendem
 - `demo/split-module-as-microservices`: Mendemonstrasikan betapa mudahnya memecah monolith menjadi microservices. Pada *branch* ini, implementasi modul `ecommerce-payment` **dihapus seutuhnya** dan direpresentasikan menggunakan antarmuka *HTTP RestClient*. Hasilnya: **Nol Perubahan** pada modul pemanggil (`Order`). (Lihat [PR #2](https://github.com/ProgrammerZamanNow/modular-monolith-demo/pull/2))
 - `demo/event-driven-architecture`: Mensimulasikan migrasi dari arsitektur *event-driven* internal aplikasi (Spring Application Event) menjadi menggunakan Message Broker eksternal (Apache Kafka) pada modul `Notification`. Sama seperti sebelumnya, hasil akhirnya adalah **Nol Perubahan** pada modul pemanggil. (Lihat [PR #3](https://github.com/ProgrammerZamanNow/modular-monolith-demo/pull/3))
 
+## Catatan Arsitektur (Architectural Concerns)
+
+Beberapa hal yang perlu diperhatikan jika proyek ini akan dikembangkan lebih lanjut menuju production:
+
+### 1. Integration Test Melanggar Module Boundary
+`OrderControllerIT` meng-inject `ProductRepository`, `BrandRepository`, `CustomerRepository`, dan `PaymentRepository` secara langsung untuk setup data — padahal ini adalah repository dari modul lain. Ini persis pelanggaran yang dicegah oleh arsitektur. ArchUnit tidak mendeteksinya karena menggunakan `DO_NOT_INCLUDE_TESTS`. Idealnya, test setup data melalui REST API atau client interface masing-masing modul.
+
+### 2. Saga Tanpa Kompensasi yang Konsisten
+`createOrder` melakukan operasi lintas modul secara berurutan dalam satu `@Transactional`: reduce stock → save order → create payment → send notification. Jika payment gagal setelah stok sudah dikurangi untuk sebagian item, stok tidak di-restore dan order tetap `PENDING` — state yang tidak konsisten. Butuh Saga pattern dengan langkah kompensasi eksplisit untuk setiap kemungkinan kegagalan.
+
+### 3. Race Condition pada Stock Check
+Pengecekan stok dan pengurangan stok adalah dua operasi terpisah:
+```java
+if (product.stock() < itemRequest.quantity()) { ... }  // check
+productClient.reduceStock(product.id(), itemRequest.quantity());  // reduce
+```
+Dua request bersamaan bisa lolos check yang sama dan bersama-sama membuat stok jadi negatif. Butuh optimistic locking atau atomic SQL (`UPDATE ... WHERE stock >= ?`).
+
+### 4. Status Order Sebagai Raw String
+`order.setStatus("PENDING")`, `"PAID"`, `"CANCELED"` tidak memiliki compile-time safety. Typo baru ketahuan saat runtime. Sebaiknya menggunakan `enum OrderStatus`.
+
+### 5. Single Database, Satu Schema untuk Semua Modul
+Semua tabel dari semua modul berada di schema yang sama. Jika kelak benar-benar split ke microservices, migrasi datanya lebih kompleks. Lebih baik menggunakan PostgreSQL schema terpisah per modul (`customer`, `product`, `order`, dst.) sejak awal, meski masih satu database instance.
+
+---
+
 ## Cara Menjalankan
 
 Aplikasi ini dilindungi dan dijamin kelayakannya oleh jaring *Integration Testing* (*End-to-End* REST API) menggunakan *Spring Boot Web Test*.
